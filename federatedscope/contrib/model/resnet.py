@@ -226,9 +226,9 @@ class ResNet(nn.Module):
 
         self.conv1 = nn.Conv2d(3,
                                64,
-                               kernel_size=3,
-                               stride=1,
-                               padding=1,
+                               kernel_size=7,
+                               stride=2,
+                               padding=3,
                                bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
@@ -247,12 +247,27 @@ class ResNet(nn.Module):
 
     def forward(self, x):
         out = F.relu(self.bn1(self.conv1(x)))
+        #print("\noutput of the first conv: ")
+        #print(out.shape)
+        out = F.max_pool2d(out, 3, 2)
         out = self.layer1(out)
+        #print("\noutput of the layer 1: ")
+        #print(out.shape)
         out = self.layer2(out)
+        #print("\noutput of the layer 2: ")
+        #print(out.shape)
         out = self.layer3(out)
+        #print("\noutput of the layer 3: ")
+        #print(out.shape)
         out = self.layer4(out)
+        #print("\noutput of the layer 4: ")
+        #print(out.shape)
         out = F.avg_pool2d(out, 4)
+        #print("\noutput of the avg pool: ")
+        #print(out.shape)
         out = out.view(out.size(0), -1)
+        #print("\noutput of the flatten: ")
+        #print(out.shape)
         out = self.linear(out)
         return out
 

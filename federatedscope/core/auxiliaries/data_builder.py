@@ -113,7 +113,7 @@ def get_data(config, client_cfgs=None):
         ==================================  ===========================
     """
     # Fix the seed for data generation
-    setup_seed(12345)
+    setup_seed(config.seed)
 
     for func in register.data_dict.values():
         data_and_config = func(config, client_cfgs)

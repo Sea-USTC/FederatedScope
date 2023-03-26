@@ -175,11 +175,10 @@ class ClientData(dict):
             Bool: Status for indicating whether the client_cfg is updated
         """
         # if `batch_size` or `shuffle` change, re-instantiate DataLoader
-        if self.client_cfg is not None:
-            if dict(self.client_cfg.dataloader) == dict(
-                    new_client_cfg.dataloader):
-                return False
-
+        # if self.client_cfg is not None:
+        #     if dict(self.client_cfg.dataloader) == dict(
+        #             new_client_cfg.dataloader):
+        #         return False
         self.client_cfg = new_client_cfg
 
         for split_data, split_name in zip(
@@ -195,5 +194,4 @@ class ClientData(dict):
                     self[split_name] = get_dataloader(split_data,
                                                       self.client_cfg,
                                                       split_name)
-
         return True

@@ -1,3 +1,5 @@
+from federatedscope.register import register_worker
+
 import logging
 import copy
 import os
@@ -13,15 +15,27 @@ from federatedscope.core.communication import StandaloneCommManager, \
 from federatedscope.core.auxiliaries.aggregator_builder import get_aggregator
 from federatedscope.core.auxiliaries.sampler_builder import get_sampler
 from federatedscope.core.auxiliaries.utils import merge_dict_of_results, \
-    Timeout, merge_param_dict
+    Timeout, merge_param_dict, calculate_time_cost
 from federatedscope.core.auxiliaries.trainer_builder import get_trainer
-from federatedscope.core.secret_sharing import AdditiveSecretSharing
 from federatedscope.core.workers.base_server import BaseServer
+from federatedscope.core.workers.base_client import BaseClient
+
+from federatedscope.core.auxiliaries.trainer_builder import get_trainer
+from federatedscope.contrib.trainer.cod_trainer import MyTorchTrainer
+from federatedscope.core.aggregators import NoCommunicationAggregator
+
+
 
 logger = logging.getLogger(__name__)
 
 
-class Server(BaseServer):
+
+
+
+
+
+# Build your worker here.
+class CODServer(BaseServer):
     """
     The Server class, which describes the behaviors of server in an FL \
     course. The behaviors are described by the handled functions (named as \
@@ -71,7 +85,7 @@ class Server(BaseServer):
                  strategy=None,
                  unseen_clients_id=None,
                  **kwargs):
-        super(Server, self).__init__(ID, state, config, model, strategy)
+        super(CODServer, self).__init__(ID, state, config, model, strategy)
         # Register message handlers
         self._register_default_handlers()
 
@@ -87,7 +101,7 @@ class Server(BaseServer):
             self._cfg.early_stop.patience, self._cfg.early_stop.delta,
             self._cfg.early_stop.improve_indicator_mode,
             self._monitor.the_larger_the_better)
-
+        
         if self._cfg.federate.share_local_model:
             # put the model to the specified device
             model.to(device)
@@ -97,13 +111,16 @@ class Server(BaseServer):
                                          device=device,
                                          online=self._cfg.federate.online_aggr,
                                          config=self._cfg)
+        self.aggregator4local = NoCommunicationAggregator(model=model,
+                                                          device=device,
+                                                          config=self._cfg)
         if self._cfg.federate.restore_from != '':
             if not os.path.exists(self._cfg.federate.restore_from):
                 logger.warning(f'Invalid `restore_from`:'
                                f' {self._cfg.federate.restore_from}.')
             else:
                 _ = self.aggregator.load_model(self._cfg.federate.restore_from)
-                logger.info("Restored the model from {}-th round's ckpt")
+                logger.info("Restored the model from {}-th round's ckpt".format(_))
 
         if int(config.model.model_num_per_trainer) != \
                 config.model.model_num_per_trainer or \
@@ -123,9 +140,8 @@ class Server(BaseServer):
             ])
 
         # function for recovering shared secret
-        self.recover_fun = AdditiveSecretSharing(
-            shared_party_num=int(self._cfg.federate.sample_client_num)
-        ).fixedpoint2float if self._cfg.federate.use_ss else None
+        self.recover_fun = None
+        ############### removed #####################
 
         if self._cfg.federate.make_global_eval:
             # set up a trainer for conducting evaluation in server
@@ -227,66 +243,7 @@ class Server(BaseServer):
 
     def register_noise_injector(self, func):
         self._noise_injector = func
-
-    def run(self):
-        """
-        To start the FL course, listen and handle messages (for distributed \
-        mode).
-        """
-
-        # Begin: Broadcast model parameters and start to FL train
-        while self.join_in_client_num < self.client_num:
-            msg = self.comm_manager.receive()
-            self.msg_handlers[msg.msg_type](msg)
-
-        # Running: listen for message (updates from clients),
-        # aggregate and broadcast feedbacks (aggregated model parameters)
-        min_received_num = self._cfg.asyn.min_received_num \
-            if self._cfg.asyn.use else self._cfg.federate.sample_client_num
-        num_failure = 0
-        time_budget = self._cfg.asyn.time_budget if self._cfg.asyn.use else -1
-        with Timeout(time_budget) as time_counter:
-            while self.state <= self.total_round_num:
-                try:
-                    msg = self.comm_manager.receive()
-                    move_on_flag = self.msg_handlers[msg.msg_type](msg)
-                    if move_on_flag:
-                        time_counter.reset()
-                except TimeoutError:
-                    logger.info('Time out at the training round #{}'.format(
-                        self.state))
-                    move_on_flag_eval = self.check_and_move_on(
-                        min_received_num=min_received_num,
-                        check_eval_result=True)
-                    move_on_flag = self.check_and_move_on(
-                        min_received_num=min_received_num)
-                    if not move_on_flag and not move_on_flag_eval:
-                        num_failure += 1
-                        # Terminate the training if the number of failure
-                        # exceeds the maximum number (default value: 10)
-                        if time_counter.exceed_max_failure(num_failure):
-                            logger.info(f'----------- Training fails at round '
-                                        f'#{self.state}-------------')
-                            break
-
-                        # Time out, broadcast the model para and re-start
-                        # the training round
-                        logger.info(
-                            f'----------- Re-starting the training round ('
-                            f'Round #{self.state}) for {num_failure} time '
-                            f'-------------')
-                        # TODO: Clean the msg_buffer
-                        if self.state in self.msg_buffer['train']:
-                            self.msg_buffer['train'][self.state].clear()
-
-                        self.broadcast_model_para(
-                            msg_type='model_para',
-                            sample_client_num=self.sample_client_num)
-                    else:
-                        num_failure = 0
-                    time_counter.reset()
-
-        self.terminate(msg_type='finish')
+    
 
     def check_and_move_on(self,
                           check_eval_result=False,
@@ -304,10 +261,7 @@ class Server(BaseServer):
                 async mode
         """
         if min_received_num is None:
-            if self._cfg.asyn.use:
-                min_received_num = self._cfg.asyn.min_received_num
-            else:
-                min_received_num = self._cfg.federate.sample_client_num
+            min_received_num = self._cfg.federate.sample_client_num
         assert min_received_num <= self.sample_client_num
 
         if check_eval_result and self._cfg.federate.mode.lower(
@@ -363,35 +317,7 @@ class Server(BaseServer):
         whether to early stop.
         """
 
-        # early stopping
-        if "Results_weighted_avg" in self.history_results and \
-                self._cfg.eval.best_res_update_round_wise_key in \
-                self.history_results['Results_weighted_avg']:
-            should_stop = self.early_stopper.track_and_check(
-                self.history_results['Results_weighted_avg'][
-                    self._cfg.eval.best_res_update_round_wise_key])
-        elif "Results_avg" in self.history_results and \
-                self._cfg.eval.best_res_update_round_wise_key in \
-                self.history_results['Results_avg']:
-            should_stop = self.early_stopper.track_and_check(
-                self.history_results['Results_avg'][
-                    self._cfg.eval.best_res_update_round_wise_key])
-        else:
-            should_stop = False
-
-        if should_stop:
-            self._monitor.global_converged()
-            self.comm_manager.send(
-                Message(
-                    msg_type="converged",
-                    sender=self.ID,
-                    receiver=list(self.comm_manager.neighbors.keys()),
-                    timestamp=self.cur_timestamp,
-                    state=self.state,
-                ))
-            self.state = self.total_round_num + 1
-
-        if should_stop or self.state == self.total_round_num:
+        if self.state == self.total_round_num:
             logger.info('Server: Final evaluation is finished! Starting '
                         'merging results.')
             # last round or early stopped
@@ -457,7 +383,10 @@ class Server(BaseServer):
                 'staleness': staleness,
             }
             # logger.info(f'The staleness is {staleness}')
-            result = aggregator.aggregate(agg_info)
+            if self.state < self._cfg.distill.local_train_epoches:
+                result = self.aggregator4local.aggregate(agg_info)
+            else:
+                result = aggregator.aggregate(agg_info)
             # Due to lazy load, we merge two state dict
             merged_param = merge_param_dict(model.state_dict().copy(), result)
             model.load_state_dict(merged_param, strict=False)
@@ -468,25 +397,8 @@ class Server(BaseServer):
         """
         The behaviors for starting a new training round
         """
-        if self._cfg.asyn.use:  # for asynchronous training
-            if self._cfg.asyn.aggregator == "time_up":
-                # Update the deadline according to the time budget
-                self.deadline_for_cur_round = \
-                    self.cur_timestamp + self._cfg.asyn.time_budget
-
-            if self._cfg.asyn.broadcast_manner == \
-                    'after_aggregating':
-                if self._cfg.asyn.overselection:
-                    sample_client_num = self.sample_client_num
-                else:
-                    sample_client_num = aggregated_num + \
-                                        self.dropout_num
-
-                self.broadcast_model_para(msg_type='model_para',
-                                          sample_client_num=sample_client_num)
-                self.dropout_num = 0
-        else:  # for synchronous training
-            self.broadcast_model_para(msg_type='model_para',
+        # for synchronous training
+        self.broadcast_model_para(msg_type='model_para',
                                       sample_client_num=self.sample_client_num)
 
     def _merge_and_format_eval_results(self):
@@ -651,6 +563,14 @@ class Server(BaseServer):
                                      self.models[model_idx_i])
 
         skip_broadcast = self._cfg.federate.method in ["local", "global"]
+        if self._cfg.distill.use:
+            if self.state - 1 <= self._cfg.distill.local_train_epoches and\
+            msg_type == 'evaluate':           
+                skip_broadcast = True
+            if self.state <= self._cfg.distill.local_train_epoches and\
+            msg_type == 'model_para': 
+                skip_broadcast = True
+                
         if self.model_num > 1:
             model_para = [{} if skip_broadcast else model.state_dict()
                           for model in self.models]
@@ -667,9 +587,6 @@ class Server(BaseServer):
                     state=min(rnd, self.total_round_num),
                     timestamp=self.cur_timestamp,
                     content=model_para))
-        if self._cfg.federate.online_aggr:
-            for idx in range(self.model_num):
-                self.aggregators[idx].reset()
 
         if filter_unseen_clients:
             # restore the state of the unseen clients within sampler
@@ -721,27 +638,8 @@ class Server(BaseServer):
                 cur_buffer = dict()
             else:
                 cur_buffer = self.msg_buffer['train'][cur_round]
-            if self._cfg.asyn.use and self._cfg.asyn.aggregator == 'time_up':
-                if self.cur_timestamp >= self.deadline_for_cur_round and len(
-                        cur_buffer) + len(self.staled_msg_buffer) == 0:
-                    # When the time budget is run out but the server has not
-                    # received any feedback
-                    logger.warning(
-                        f'The server has not received any feedback when the '
-                        f'time budget has run out, therefore the server would '
-                        f'wait for more {self._cfg.asyn.time_budget} seconds. '
-                        f'Maybe you should carefully reset '
-                        f'`cfg.asyn.time_budget` to a reasonable value.')
-                    self.deadline_for_cur_round += self._cfg.asyn.time_budget
-                    if self._cfg.asyn.broadcast_manner == \
-                            'after_aggregating' and self.dropout_num != 0:
-                        self.broadcast_model_para(
-                            msg_type='model_para',
-                            sample_client_num=self.dropout_num)
-                        self.dropout_num = 0
-                return self.cur_timestamp >= self.deadline_for_cur_round
-            else:
-                return len(cur_buffer)+len(self.staled_msg_buffer) >= \
+            
+            return len(cur_buffer)+len(self.staled_msg_buffer) >= \
                        min_received_num
 
     def check_client_join_in(self):
@@ -760,8 +658,6 @@ class Server(BaseServer):
         """
 
         if self.check_client_join_in():
-            if self._cfg.federate.use_ss or self._cfg.vertical.use:
-                self.broadcast_client_address()
 
             # get sampler
             if 'client_resource' in self._cfg.federate.join_in_info:
@@ -790,11 +686,6 @@ class Server(BaseServer):
                     sample_strategy=self._cfg.federate.sampler,
                     client_num=self.client_num,
                     client_info=client_resource)
-
-            # change the deadline if the asyn.aggregator is `time up`
-            if self._cfg.asyn.use and self._cfg.asyn.aggregator == 'time_up':
-                self.deadline_for_cur_round = self.cur_timestamp + \
-                                               self._cfg.asyn.time_budget
 
             # start feature engineering
             self.trigger_for_feat_engr(
@@ -925,14 +816,7 @@ class Server(BaseServer):
             logger.info(f'Drop a out-of-date message from round #{round}')
             self.dropout_num += 1
 
-        if self._cfg.federate.online_aggr:
-            self.aggregator.inc(content)
-
         move_on_flag = self.check_and_move_on()
-        if self._cfg.asyn.use and self._cfg.asyn.broadcast_manner == \
-                'after_receiving':
-            self.broadcast_model_para(msg_type='model_para',
-                                      sample_client_num=1)
 
         return move_on_flag
 
@@ -1007,3 +891,440 @@ class Server(BaseServer):
     @classmethod
     def get_msg_handler_dict(cls):
         return cls().msg_handlers_str
+
+
+
+class CODClient(BaseClient):
+    """
+    The Client class, which describes the behaviors of client in an FL \
+    course. The behaviors are described by the handling functions (named as \
+    ``callback_funcs_for_xxx``)
+
+    Arguments:
+        ID: The unique ID of the client, which is assigned by the server
+        when joining the FL course
+        server_id: (Default) 0
+        state: The training round
+        config: The configuration
+        data: The data owned by the client
+        model: The model maintained locally
+        device: The device to run local training and evaluation
+
+    Attributes:
+        ID: ID of worker
+        state: the training round index
+        model: the model maintained locally
+        cfg: the configuration of FL course, \
+            see ``federatedscope.core.configs``
+        mode: the run mode for FL, ``distributed`` or ``standalone``
+        monitor: monite FL course and record metrics, \
+            see ``federatedscope.core.monitors.monitor.Monitor``
+        trainer: instantiated trainer, see ``federatedscope.core.trainers``
+        best_results: best results ever seen
+        history_results: all evaluation results
+        early_stopper: determine when to early stop, \
+            see ``federatedscope.core.monitors.early_stopper.EarlyStopper``
+        ss_manager: secret sharing manager
+        msg_buffer: dict buffer for storing message
+        comm_manager: manager for communication, \
+            see ``federatedscope.core.communication``
+    """
+    def __init__(self,
+                 ID=-1,
+                 server_id=None,
+                 state=-1,
+                 config=None,
+                 data=None,
+                 model=None,
+                 device='cpu',
+                 strategy=None,
+                 is_unseen_client=False,
+                 *args,
+                 **kwargs):
+        super(CODClient, self).__init__(ID, state, config, model, strategy)
+        # Register message handlers
+        self._register_default_handlers()
+
+        # Un-configured worker
+        if config is None:
+            return
+
+
+        self.local_model = copy.deepcopy(self.model)
+
+        # the unseen_client indicates that whether this client contributes to
+        # FL process by training on its local data and uploading the local
+        # model update, which is useful for check the participation
+        # generalization gap in
+        # [ICLR'22, What Do We Mean by Generalization in Federated Learning?]
+        self.is_unseen_client = is_unseen_client
+
+        # Parse the attack_id since we support both 'int' (for single attack)
+        # and 'list' (for multiple attacks) for config.attack.attack_id
+        parsed_attack_ids = list()
+        if isinstance(config.attack.attacker_id, int):
+            parsed_attack_ids.append(config.attack.attacker_id)
+        elif isinstance(config.attack.attacker_id, list):
+            parsed_attack_ids = config.attack.attacker_id
+        else:
+            raise TypeError(f"The expected types of config.attack.attack_id "
+                            f"include 'int' and 'list', but we got "
+                            f"{type(config.attack.attacker_id)}")
+
+        # Attack only support the stand alone model;
+        # Check if is a attacker; a client is a attacker if the
+        # config.attack.attack_method is provided
+        self.is_attacker = ID in parsed_attack_ids and \
+            config.attack.attack_method != '' and \
+            config.federate.mode == 'standalone'
+
+        # Build Trainer
+        # trainer might need configurations other than those of trainer node
+        self.trainer = MyTorchTrainer(model=model,
+                                   local_model=self.local_model,
+                                   data=data,
+                                   device=device,
+                                   config=self._cfg,
+                                   monitor=self._monitor)
+        # For client-side evaluation
+        self.best_results = dict()
+        self.history_results = dict()
+        # in local or global training mode, we do use the early stopper.
+        # Otherwise, we set patience=0 to deactivate the local early-stopper
+        patience = self._cfg.early_stop.patience if \
+            self._cfg.federate.method in [
+                "local", "global"
+            ] else 0
+        self.early_stopper = EarlyStopper(
+            patience, self._cfg.early_stop.delta,
+            self._cfg.early_stop.improve_indicator_mode,
+            self._monitor.the_larger_the_better)
+
+        # Secret Sharing Manager and message buffer
+        ##################### removed ##########################
+        self.msg_buffer = {'train': dict(), 'eval': dict()}
+
+        # Communication and communication ability
+        if 'resource_info' in kwargs and kwargs['resource_info'] is not None:
+            self.comp_speed = float(
+                kwargs['resource_info']['computation']) / 1000.  # (s/sample)
+            self.comm_bandwidth = float(
+                kwargs['resource_info']['communication'])  # (kbit/s)
+        else:
+            self.comp_speed = None
+            self.comm_bandwidth = None
+
+        if self._cfg.backend == 'torch':
+            self.model_size = sys.getsizeof(pickle.dumps(
+                self.model)) / 1024.0 * 8.  # kbits
+        else:
+            # TODO: calculate model size for TF Model
+            self.model_size = 1.0
+            logger.warning(f'The calculation of model size in backend:'
+                           f'{self._cfg.backend} is not provided.')
+
+        # Initialize communication manager
+        self.server_id = server_id
+        if self.mode == 'standalone':
+            comm_queue = kwargs['shared_comm_queue']
+            self.comm_manager = StandaloneCommManager(comm_queue=comm_queue,
+                                                      monitor=self._monitor)
+            self.local_address = None
+        elif self.mode == 'distributed':
+            host = kwargs['host']
+            port = kwargs['port']
+            server_host = kwargs['server_host']
+            server_port = kwargs['server_port']
+            self.comm_manager = gRPCCommManager(
+                host=host, port=port, client_num=self._cfg.federate.client_num)
+            logger.info('Client: Listen to {}:{}...'.format(host, port))
+            self.comm_manager.add_neighbors(neighbor_id=server_id,
+                                            address={
+                                                'host': server_host,
+                                                'port': server_port
+                                            })
+            self.local_address = {
+                'host': self.comm_manager.host,
+                'port': self.comm_manager.port
+            }
+
+    def _gen_timestamp(self, init_timestamp, instance_number):
+        if init_timestamp is None:
+            return None
+
+        comp_cost, comm_cost = calculate_time_cost(
+            instance_number=instance_number,
+            comm_size=self.model_size,
+            comp_speed=self.comp_speed,
+            comm_bandwidth=self.comm_bandwidth)
+        return init_timestamp + comp_cost + comm_cost
+
+    def _calculate_model_delta(self, init_model, updated_model):
+        if not isinstance(init_model, list):
+            init_model = [init_model]
+            updated_model = [updated_model]
+
+        model_deltas = list()
+        for model_index in range(len(init_model)):
+            model_delta = copy.deepcopy(init_model[model_index])
+            for key in init_model[model_index].keys():
+                model_delta[key] = updated_model[model_index][
+                    key] - init_model[model_index][key]
+            model_deltas.append(model_delta)
+
+        if len(model_deltas) > 1:
+            return model_deltas
+        else:
+            return model_deltas[0]
+
+    def join_in(self):
+        """
+        To send ``join_in`` message to the server for joining in the FL course.
+        """
+        self.comm_manager.send(
+            Message(msg_type='join_in',
+                    sender=self.ID,
+                    receiver=[self.server_id],
+                    timestamp=0,
+                    content=self.local_address))
+
+    # run for distributed model
+    ########### removed ###############
+    
+    def callback_funcs_for_model_para(self, message: Message):
+        """
+        The handling function for receiving model parameters, \
+        which triggers the local training process. \
+        This handling function is widely used in various FL courses.
+
+        Arguments:
+            message: The received message
+        """
+        round = message.state
+        sender = message.sender
+        timestamp = message.timestamp
+        content = message.content
+        # When clients share the local model, we must set strict=True to
+        # ensure all the model params (which might be updated by other
+        # clients in the previous local training process) are overwritten
+        # and synchronized with the received model
+        self.trainer.update(content,
+                            strict=self._cfg.federate.share_local_model)
+        
+        self.state = round
+        if self.is_unseen_client:
+            # for these cases (1) unseen client (2) isolated_global_mode,
+            # we do not local train and upload local model
+            sample_size, model_para_all, results = \
+                0, self.trainer.get_model_para(), {}
+        else:
+            if round < self._cfg.distill.local_train_epoches:
+                sample_size, model_para_all, results = self.trainer.train()
+            else:
+                if round == self._cfg.distill.local_train_epoches:
+                    a = self.trainer.ctx
+                    self.trainer.ctx = self.trainer.local_ctx
+                    self.trainer.local_ctx = a
+                self.trainer.distill(eval_before=True)
+                sample_size, model_para_all, results = self.trainer.distill()
+            if self._cfg.federate.share_local_model and not \
+                    self._cfg.federate.online_aggr:
+                model_para_all = copy.deepcopy(model_para_all)
+            train_log_res = self._monitor.format_eval_res(
+                results,
+                rnd=self.state,
+                role='Client #{}'.format(self.ID),
+                return_raw=True)
+            logger.info(train_log_res)
+
+        # Return the feedbacks to the server after local update
+        
+        shared_model_para = model_para_all
+
+        self.comm_manager.send(
+            Message(msg_type='model_para',
+                    sender=self.ID,
+                    receiver=[sender],
+                    state=self.state,
+                    timestamp=self._gen_timestamp(
+                        init_timestamp=timestamp,
+                        instance_number=sample_size),
+                    content=(sample_size, shared_model_para)))
+
+    def callback_funcs_for_assign_id(self, message: Message):
+        """
+        The handling function for receiving the client_ID assigned by the \
+        server (during the joining process), which is used in the \
+        distributed mode.
+
+        Arguments:
+            message: The received message
+        """
+        content = message.content
+        self.ID = int(content)
+        logger.info('Client (address {}:{}) is assigned with #{:d}.'.format(
+            self.comm_manager.host, self.comm_manager.port, self.ID))
+
+    def callback_funcs_for_join_in_info(self, message: Message):
+        """
+        The handling function for receiving the request of join in \
+        information (such as ``batch_size``, ``num_of_samples``) during \
+        the joining process.
+
+        Arguments:
+            message: The received message
+        """
+        requirements = message.content
+        timestamp = message.timestamp
+        join_in_info = dict()
+        for requirement in requirements:
+            if requirement.lower() == 'num_sample':
+                if self._cfg.train.batch_or_epoch == 'batch':
+                    num_sample = self._cfg.train.local_update_steps * \
+                                 self._cfg.dataloader.batch_size
+                else:
+                    num_sample = self._cfg.train.local_update_steps * \
+                                 len(self.data['train'])
+                join_in_info['num_sample'] = num_sample
+            elif requirement.lower() == 'client_resource':
+                assert self.comm_bandwidth is not None and self.comp_speed \
+                       is not None, "The requirement join_in_info " \
+                                    "'client_resource' does not exist."
+                join_in_info['client_resource'] = self.model_size / \
+                    self.comm_bandwidth + self.comp_speed
+            else:
+                raise ValueError(
+                    'Fail to get the join in information with type {}'.format(
+                        requirement))
+        self.comm_manager.send(
+            Message(msg_type='join_in_info',
+                    sender=self.ID,
+                    receiver=[self.server_id],
+                    state=self.state,
+                    timestamp=timestamp,
+                    content=join_in_info))
+
+    def callback_funcs_for_address(self, message: Message):
+        """
+        The handling function for receiving other clients' IP addresses, \
+        which is used for constructing a complex topology
+
+        Arguments:
+            message: The received message
+        """
+        content = message.content
+        for neighbor_id, address in content.items():
+            if int(neighbor_id) != self.ID:
+                self.comm_manager.add_neighbors(neighbor_id, address)
+
+    def callback_funcs_for_evaluate(self, message: Message):
+        """
+        The handling function for receiving the request of evaluating
+
+        Arguments:
+            message: The received message
+        """
+        sender, timestamp = message.sender, message.timestamp
+        self.state = message.state
+        if message.content is not None:
+            self.trainer.update(message.content,
+                                strict=self._cfg.federate.share_local_model)
+        if self.early_stopper.early_stopped and self._cfg.federate.method in [
+                "local", "global"
+        ]:
+            metrics = list(self.best_results.values())[0]
+        else:
+            metrics = {}
+            if self._cfg.finetune.before_eval:
+                self.trainer.finetune()
+            for split in self._cfg.eval.split:
+                # TODO: The time cost of evaluation is not considered here
+                eval_metrics = self.trainer.evaluate(
+                    target_data_split_name=split)
+                metrics.update(**eval_metrics)
+
+            formatted_eval_res = self._monitor.format_eval_res(
+                metrics,
+                rnd=self.state,
+                role='Client #{}'.format(self.ID),
+                forms=['raw'],
+                return_raw=True)
+            
+            self._monitor.update_best_result(self.best_results,
+                                             formatted_eval_res['Results_raw'],
+                                             results_type=f"client #{self.ID}")
+            self.history_results = merge_dict_of_results(
+                self.history_results, formatted_eval_res['Results_raw'])
+
+            self.comm_manager.send(
+            Message(msg_type='metrics',
+                    sender=self.ID,
+                    receiver=[sender],
+                    state=self.state,
+                    timestamp=timestamp,
+                    content=metrics))
+
+            if self.state > self._cfg.distill.local_train_epoches:
+                a = self.trainer.ctx
+                self.trainer.ctx = self.trainer.local_ctx
+                self.trainer.local_ctx = a
+                for split in self._cfg.eval.split:
+                    # TODO: The time cost of evaluation is not considered here                    
+                    eval_metrics = self.trainer.evaluate(
+                        target_data_split_name=split)
+                    metrics.update(**eval_metrics)
+                a = self.trainer.ctx
+                self.trainer.ctx = self.trainer.local_ctx
+                self.trainer.local_ctx = a
+                formatted_eval_res = self._monitor.format_eval_res(
+                metrics,
+                rnd=self.state,
+                role='Client #{}'.format(self.ID),
+                forms=['raw'],
+                return_raw=True)
+
+
+
+
+        
+
+    def callback_funcs_for_finish(self, message: Message):
+        """
+        The handling function for receiving the signal of finishing the FL \
+        course.
+
+        Arguments:
+            message: The received message
+        """
+        logger.info(
+            f"================= client {self.ID} received finish message "
+            f"=================")
+
+        if message.content is not None:
+            self.trainer.update(message.content,
+                                strict=self._cfg.federate.share_local_model)
+
+        self._monitor.finish_fl()
+
+    def callback_funcs_for_converged(self, message: Message):
+        """
+        The handling function for receiving the signal that the FL course \
+        converged
+
+        Arguments:
+            message: The received message
+        """
+        self._monitor.global_converged()
+
+    @classmethod
+    def get_msg_handler_dict(cls):
+        return cls().msg_handlers_str
+
+
+def call_my_worker(method):
+    if method == 'codfed':
+        worker_builder = {'client': CODClient, 'server': CODServer}
+        return worker_builder
+
+
+register_worker('CoDFed', call_my_worker)
