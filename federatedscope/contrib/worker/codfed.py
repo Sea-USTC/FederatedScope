@@ -951,7 +951,7 @@ class CODClient(BaseClient):
 
 
         self.local_model = copy.deepcopy(self.model)
-
+        self.swapped = False
         # the unseen_client indicates that whether this client contributes to
         # FL process by training on its local data and uploading the local
         # model update, which is useful for check the participation
@@ -1121,10 +1121,11 @@ class CODClient(BaseClient):
             if round < self._cfg.distill.local_train_epoches:
                 sample_size, model_para_all, results = self.trainer.train()
             else:
-                if round == self._cfg.distill.local_train_epoches:
+                if not self.swapped:
                     a = self.trainer.ctx
                     self.trainer.ctx = self.trainer.local_ctx
                     self.trainer.local_ctx = a
+                    self.swapped = True                
                 self.trainer.distill(eval_before=True)
                 sample_size, model_para_all, results = self.trainer.distill()
             if self._cfg.federate.share_local_model and not \

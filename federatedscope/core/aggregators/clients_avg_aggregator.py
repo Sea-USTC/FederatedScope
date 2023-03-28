@@ -67,7 +67,6 @@ class ClientsAvgAggregator(Aggregator):
             training_set_size += sample_size
 
         sample_size, avg_model = models[0]
-        print(avg_model.keys())
         for key in avg_model:
             if key.startswith('linear'):
                 continue

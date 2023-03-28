@@ -10,7 +10,8 @@ from federatedscope.core.auxiliaries.optimizer_builder import get_optimizer
 from federatedscope.core.auxiliaries.scheduler_builder import get_scheduler
 from federatedscope.core.auxiliaries.dataloader_builder import get_dataloader
 from federatedscope.core.auxiliaries.ReIterator import ReIterator
-
+from federatedscope.core.auxiliaries.utils import param2tensor, \
+    merge_param_dict
 from federatedscope.contrib.trainer.cod_context import cod_context
 
 import random
@@ -411,7 +412,8 @@ class MyTorchTrainer(GeneralTorchTrainer):
             #correct_list = [[0. for _ in range(classes)] for x in range(y_true.shape[1])]
             for idx, ctx in enumerate((local_ctx, global_ctx)):
                 y_true = np.concatenate(ctx.ys_true)
-                y_pred = np.concatenate(ctx.ys_prob)
+                y_prob = np.concatenate(ctx.ys_prob)
+                y_pred = np.argmax(y_prob, axis=1)
                 is_class = [np.where(y_true[:] == k)[0] for k in range(classes)]
                 correct = [y_true[is_class[k]] == y_pred[is_class[k]] for k in range(classes)]
                 for k in range(classes):
@@ -425,6 +427,10 @@ class MyTorchTrainer(GeneralTorchTrainer):
                     setattr(global_ctx, 'acc_list', acc_list)
                 setattr(ctx, 'eval_metrics', {})
             learn_from_the_other = local_ctx.acc_list < global_ctx.acc_list
+            logger.info("#### distill eval ####")
+            logger.info(local_ctx.acc_list)
+            logger.info(global_ctx.acc_list)
+            logger.info(learn_from_the_other)
             setattr(local_ctx, 'learn_from_the_other', learn_from_the_other)
 
     def register_hook_in_distill(self,
@@ -436,6 +442,21 @@ class MyTorchTrainer(GeneralTorchTrainer):
         hooks_dict = self.hooks_in_distill
         self._register_hook(base_hook, hooks_dict, insert_mode, insert_pos,
                             new_hook, trigger)
+
+    def update(self, model_parameters, strict=False):
+        """
+            Called by the FL client to update the model parameters
+        Arguments:
+            model_parameters (dict): PyTorch Module object's state_dict.
+        """
+        for key in model_parameters:
+            if key.startswith('linear'):
+                continue
+            model_parameters[key] = param2tensor(model_parameters[key])
+        # Due to lazy load, we merge two state dict
+        merged_param = merge_param_dict(self.ctx.model.state_dict().copy(),
+                                        self._param_filter(model_parameters))
+        self.ctx.model.load_state_dict(merged_param, strict=strict)
 
 
     def distill(self, target_data_split_name="train", hooks_set=None, eval_before=False):
@@ -464,8 +485,9 @@ class MyTorchTrainer(GeneralTorchTrainer):
             hook(self.ctx) 
 
         target_list = [i for i in range(self.num_classes)]
-        if self.cfg.distill.shuffle:
+        if self.cfg.distill.shuffle and self.ctx.cur_mode == 'train':
             random.shuffle(target_list)
+        logger.info(target_list)
         for target in target_list:
             if self.ctx.cur_mode == 'train' and len(self.train_category_subsets[target])==0:
                 continue
@@ -494,6 +516,8 @@ class MyTorchTrainer(GeneralTorchTrainer):
 
     @distilllifecycle(LIFECYCLE.BATCH)
     def _run_distill_batch(self, hooks_set):
+        a = getattr(self.ctx, f'num_distill_{self.ctx.cur_split}_batch')[getattr(self.ctx, 'cur_category')]
+        logger.info(f"target: {self.ctx.cur_category} batch_num: {a}")
         for batch_i in range(getattr(self.ctx, f'num_distill_{self.ctx.cur_split}_batch')[getattr(self.ctx, 'cur_category')]):
             
             self.ctx.cur_batch_i = CtxVar(batch_i, LIFECYCLE.BATCH)

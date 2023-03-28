@@ -8,9 +8,6 @@ def load_cateacc_metrics(ctx, y_true, y_prob, y_pred, **kwargs):
         classes = 10
         #correct_list = [[0. for _ in range(classes)] for x in range(y_true.shape[1])]
         acc_list =[]
-        print("-----eval------eval-----")
-        print(y_true[:,0])
-        print(y_pred[:,0])
         for i in range(y_true.shape[1]):
             is_class = [np.where(y_true[:, i] == k)[0] for k in range(classes)]
             correct = [y_true[is_class[k], i] == y_pred[is_class[k], i] for k in range(classes)]
