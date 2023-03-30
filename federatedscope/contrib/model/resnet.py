@@ -317,4 +317,4 @@ def call_resnet(model_config, local_data):
         return model
 
 
-register_model('resnet', call_resnet)
+# register_model('resnet', call_resnet)

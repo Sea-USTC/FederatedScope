@@ -465,7 +465,11 @@ class MyTorchTrainer(GeneralTorchTrainer):
         self.ctx.check_split(target_data_split_name)
         self.local_ctx.check_split(target_data_split_name)
         if eval_before:
+            self.ctx.model.eval()
+            self.local_ctx.model.eval()
             num_samples = self._run_distill_routine(MODE.TEST, hooks_set, "test")
+            self.ctx.model.train()
+            self.local_ctx.model.train()
         else:
             num_samples = self._run_distill_routine(MODE.TRAIN, hooks_set, target_data_split_name)
 
