@@ -450,7 +450,7 @@ class MyTorchTrainer(GeneralTorchTrainer):
             model_parameters (dict): PyTorch Module object's state_dict.
         """
         for key in model_parameters:
-            if key.startswith('linear'):
+            if key.startswith('fc'):
                 continue
             model_parameters[key] = param2tensor(model_parameters[key])
         # Due to lazy load, we merge two state dict
