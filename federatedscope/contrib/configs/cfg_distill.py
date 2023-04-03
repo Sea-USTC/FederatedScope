@@ -13,7 +13,7 @@ def extend_distill_cfg(cfg):
 
     cfg.distill.optimizer = CN(new_allowed=True)
     cfg.distill.optimizer.type = 'SGD'
-    cfg.distill.optimizer.lr = 0.0001
+    cfg.distill.optimizer.lr = 0.00001
     
     cfg.distill.scheduler = CN(new_allowed=True)
     cfg.distill.scheduler.type = ''

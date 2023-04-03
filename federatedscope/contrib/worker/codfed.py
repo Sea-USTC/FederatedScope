@@ -545,13 +545,13 @@ class CODServer(BaseServer):
             # to filter out the unseen clients when sampling
             self.sampler.change_state(self.unseen_clients_id, 'unseen')
 
-        if sample_client_num > 0:
+        if sample_client_num > 0 and not (self.state >= self._cfg.distill.local_train_epoches-1 
+                                     and  self.state<= self._cfg.distill.local_train_epoches+1
+                                     and  msg_type == 'model_para'):
             receiver = self.sampler.sample(size=sample_client_num)
         else:
             # broadcast to all clients
             receiver = list(self.comm_manager.neighbors.keys())
-            if msg_type == 'model_para':
-                self.sampler.change_state(receiver, 'working')
 
         if self._noise_injector is not None and msg_type == 'model_para':
             # Inject noise only when broadcast parameters
