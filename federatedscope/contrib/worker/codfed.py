@@ -1126,6 +1126,7 @@ class CODClient(BaseClient):
                     self.trainer.ctx = self.trainer.local_ctx
                     self.trainer.local_ctx = a
                     self.swapped = True                
+                self.trainer.train()
                 self.trainer.distill(eval_before=True)
                 sample_size, model_para_all, results = self.trainer.distill()
             if self._cfg.federate.share_local_model and not \
