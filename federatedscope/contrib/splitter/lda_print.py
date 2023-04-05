@@ -146,7 +146,7 @@ class LDA_printSplitter(BaseSplitter):
         ax.set_xlabel("class #")
         ax.set_ylabel("client #")
         ax.grid(which='minor')
-        fig.set_size_inches(14,14)
+        fig.set_size_inches(0.7*classes, 0.7*client_num)
         #fig.colorbar(col)
         fig.savefig(self.dir, dpi=300 )
 
