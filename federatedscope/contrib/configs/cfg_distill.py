@@ -5,8 +5,8 @@ def extend_distill_cfg(cfg):
     cfg.distill = CN()
     cfg.distill.use = True
     cfg.distill.batchsize = 32
-    cfg.distill.temperature = 1
-    cfg.distill.alpha=1
+    cfg.distill.temperature = 1.0
+    cfg.distill.alpha=1.0
     cfg.distill.num_epoches = 3
     cfg.distill.local_train_epoches = 20
     cfg.distill.shuffle = True
