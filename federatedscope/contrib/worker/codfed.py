@@ -111,9 +111,6 @@ class CODServer(BaseServer):
                                          device=device,
                                          online=self._cfg.federate.online_aggr,
                                          config=self._cfg)
-        self.aggregator4local = NoCommunicationAggregator(model=model,
-                                                          device=device,
-                                                          config=self._cfg)
         if self._cfg.federate.restore_from != '':
             if not os.path.exists(self._cfg.federate.restore_from):
                 logger.warning(f'Invalid `restore_from`:'
@@ -383,10 +380,7 @@ class CODServer(BaseServer):
                 'staleness': staleness,
             }
             # logger.info(f'The staleness is {staleness}')
-            if self.state < self._cfg.distill.local_train_epoches:
-                result = self.aggregator4local.aggregate(agg_info)
-            else:
-                result = aggregator.aggregate(agg_info)
+            result = aggregator.aggregate(agg_info)
             # Due to lazy load, we merge two state dict
             merged_param = merge_param_dict(model.state_dict().copy(), result)
             model.load_state_dict(merged_param, strict=False)
@@ -951,7 +945,6 @@ class CODClient(BaseClient):
 
 
         self.local_model = copy.deepcopy(self.model)
-        self.swapped = False
         # the unseen_client indicates that whether this client contributes to
         # FL process by training on its local data and uploading the local
         # model update, which is useful for check the participation
@@ -1120,12 +1113,7 @@ class CODClient(BaseClient):
         else:
             if round < self._cfg.distill.local_train_epoches:
                 sample_size, model_para_all, results = self.trainer.train()
-            else:
-                if not self.swapped:
-                    a = self.trainer.ctx
-                    self.trainer.ctx = self.trainer.local_ctx
-                    self.trainer.local_ctx = a
-                    self.swapped = True                
+            else:                
                 self.trainer.train()
                 self.trainer.distill(eval_before=True)
                 sample_size, model_para_all, results = self.trainer.distill()
