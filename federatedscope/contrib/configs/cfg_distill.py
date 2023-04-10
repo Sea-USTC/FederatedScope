@@ -14,6 +14,10 @@ def extend_distill_cfg(cfg):
     cfg.distill.optimizer = CN(new_allowed=True)
     cfg.distill.optimizer.type = 'SGD'
     cfg.distill.optimizer.lr = 0.00001
+
+    cfg.distill.optimizer4train = CN(new_allowed=True)
+    cfg.distill.optimizer4train.type = 'SGD'
+    cfg.distill.optimizer4train.lr = 0.001
     
     cfg.distill.scheduler = CN(new_allowed=True)
     cfg.distill.scheduler.type = ''

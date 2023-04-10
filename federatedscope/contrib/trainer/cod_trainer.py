@@ -244,6 +244,135 @@ class MyTorchTrainer(GeneralTorchTrainer):
         self.register_hook_in_distill(self._hook_on_distill_batch_end, "on_batch_end")
         self.register_hook_in_distill(self._hook_on_distill_fit_end, "on_fit_end")
 
+    def register_default_hooks_train(self):
+        self.register_hook_in_train(self._hook_on_train_fit_start_init,
+                                    "on_fit_start")
+        self.register_hook_in_train(
+            self._hook_on_fit_start_calculate_model_size, "on_fit_start")
+        self.register_hook_in_train(self._hook_on_train_epoch_start,
+                                    "on_epoch_start")
+        self.register_hook_in_train(self._hook_on_train_batch_start_init,
+                                    "on_batch_start")
+        self.register_hook_in_train(self._hook_on_train_batch_forward,
+                                    "on_batch_forward")
+        self.register_hook_in_train(self._hook_on_train_batch_forward_regularizer,
+                                    "on_batch_forward")
+        self.register_hook_in_train(self._hook_on_batch_forward_flop_count,
+                                    "on_batch_forward")
+        self.register_hook_in_train(self._hook_on_train_batch_backward,
+                                    "on_batch_backward")
+        self.register_hook_in_train(self._hook_on_train_batch_end, "on_batch_end")
+        self.register_hook_in_train(self._hook_on_train_fit_end, "on_fit_end")
+
+    def _hook_on_train_fit_start_init(self, ctx):
+        local_ctx = self.local_ctx
+        global_ctx = ctx
+        # Initialize optimizer here to avoid the reuse of optimizers
+        # across different routines
+        for ctx in (local_ctx, global_ctx):
+            ctx.model.to(ctx.device)
+            ctx.loss_batch_total = CtxVar(0., LIFECYCLE.ROUTINE)
+            ctx.loss_regular_total = CtxVar(0., LIFECYCLE.ROUTINE)
+            ctx.num_samples = CtxVar(0, LIFECYCLE.ROUTINE)
+            ctx.ys_true = CtxVar([], LIFECYCLE.ROUTINE)
+            ctx.ys_prob = CtxVar([], LIFECYCLE.ROUTINE)
+        local_ctx.optimizer = get_optimizer(local_ctx.model,
+                                            **local_ctx.cfg.distill.optimizer4train)
+        local_ctx.scheduler = get_scheduler(local_ctx.optimizer,
+                                            **local_ctx.cfg.train.scheduler)
+        ctx.optimizer = get_optimizer(ctx.model,
+                                            **ctx.cfg.train.optimizer)
+        ctx.scheduler = get_scheduler(ctx.optimizer,
+                                            **ctx.cfg.train.scheduler)
+
+    def _hook_on_train_epoch_start(self, ctx):
+        local_ctx = self.local_ctx
+        global_ctx = ctx
+        for ctx in (local_ctx, global_ctx):
+            if ctx.get("{}_loader".format(ctx.cur_split)) is None:
+                loader = get_dataloader(
+                    WrapDataset(ctx.get("{}_data".format(ctx.cur_split))),
+                    self.cfg, ctx.cur_split)
+                setattr(ctx, "{}_loader".format(ctx.cur_split), ReIterator(loader))
+            elif not isinstance(ctx.get("{}_loader".format(ctx.cur_split)),
+                                ReIterator):
+                setattr(ctx, "{}_loader".format(ctx.cur_split),
+                        ReIterator(ctx.get("{}_loader".format(ctx.cur_split))))
+            else:
+                ctx.get("{}_loader".format(ctx.cur_split)).reset()
+
+    def _hook_on_train_batch_start_init(self, ctx):
+        # prepare data batch
+        local_ctx = self.local_ctx
+        global_ctx = ctx
+        for ctx in (local_ctx, global_ctx):
+            try:
+                ctx.data_batch = CtxVar(
+                    next(ctx.get("{}_loader".format(ctx.cur_split))),
+                    LIFECYCLE.BATCH)
+            except StopIteration:
+                raise StopIteration
+
+    def _hook_on_train_batch_forward(self, ctx):
+        local_ctx = self.local_ctx
+        global_ctx = ctx
+        for ctx in (local_ctx, global_ctx):
+            x, label = [_.to(ctx.device) for _ in ctx.data_batch]
+            pred = ctx.model(x)
+            if len(label.size()) == 0:
+                label = label.unsqueeze(0)
+
+            ctx.y_true = CtxVar(label, LIFECYCLE.BATCH)
+            ctx.y_prob = CtxVar(pred, LIFECYCLE.BATCH)
+            ctx.loss_batch = CtxVar(ctx.criterion(pred, label), LIFECYCLE.BATCH)
+            ctx.batch_size = CtxVar(len(label), LIFECYCLE.BATCH)
+
+    def _hook_on_train_batch_forward_regularizer(self, ctx):
+        local_ctx = self.local_ctx
+        global_ctx = ctx
+        for ctx in (local_ctx, global_ctx):
+            ctx.loss_regular = CtxVar(
+                self.cfg.regularizer.mu * ctx.regularizer(ctx), LIFECYCLE.BATCH)
+            ctx.loss_task = CtxVar(ctx.loss_batch + ctx.loss_regular,
+                                LIFECYCLE.BATCH)
+
+    def _hook_on_train_batch_backward(self, ctx):
+        local_ctx = self.local_ctx
+        global_ctx = ctx
+        for ctx in (local_ctx, global_ctx):
+            ctx.optimizer.zero_grad()
+            ctx.loss_task.backward()
+            if ctx.grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(ctx.model.parameters(),
+                                            ctx.grad_clip)
+
+            ctx.optimizer.step()
+            if ctx.scheduler is not None:
+                ctx.scheduler.step()
+
+    def _hook_on_train_batch_end(self, ctx):
+        local_ctx = self.local_ctx
+        global_ctx = ctx
+        for ctx in (local_ctx, global_ctx):
+            # update statistics
+            ctx.num_samples += ctx.batch_size
+            ctx.loss_batch_total += ctx.loss_batch.item() * ctx.batch_size
+            ctx.loss_regular_total += float(ctx.get("loss_regular", 0.))
+            # cache label for evaluate
+            ctx.ys_true.append(ctx.y_true.detach().cpu().numpy())
+            ctx.ys_prob.append(ctx.y_prob.detach().cpu().numpy())
+
+    def _hook_on_train_fit_end(self, ctx):
+        local_ctx = self.local_ctx
+        global_ctx = ctx
+        for ctx in (local_ctx, global_ctx):
+            ctx.ys_true = CtxVar(np.concatenate(ctx.ys_true), LIFECYCLE.ROUTINE)
+            ctx.ys_prob = CtxVar(np.concatenate(ctx.ys_prob), LIFECYCLE.ROUTINE)
+        results = global_ctx.monitor.eval(global_ctx)
+        results_local = local_ctx.monitor.eval(local_ctx)
+        setattr(global_ctx, 'eval_metrics', results)
+        setattr(local_ctx,'eval_metrics', results_local)
+
     def _hook_on_distill_fit_start_init(self, ctx):
         local_ctx = self.local_ctx
         global_ctx = ctx
@@ -286,7 +415,6 @@ class MyTorchTrainer(GeneralTorchTrainer):
                     else:
                         ctx["train_category_loaders"][target].reset()
             
-
     def _hook_on_distill_batch_start_init(self, ctx):
         local_ctx = self.local_ctx
         global_ctx = ctx
@@ -450,13 +578,82 @@ class MyTorchTrainer(GeneralTorchTrainer):
             model_parameters (dict): PyTorch Module object's state_dict.
         """
         for key in model_parameters:
-            if key.startswith('fc'):
+            if key.lower().startswith('classifier'):
                 continue
             model_parameters[key] = param2tensor(model_parameters[key])
         # Due to lazy load, we merge two state dict
         merged_param = merge_param_dict(self.ctx.model.state_dict().copy(),
                                         self._param_filter(model_parameters))
+        # if self.ctx.model.state_dict().get('fc.weight'):
+        #     logger.info(f"fc.weight_before: {self.ctx.model.state_dict()['fc.weight']}")
         self.ctx.model.load_state_dict(merged_param, strict=strict)
+        # if self.ctx.model.state_dict().get('fc.weight'):
+        #     logger.info(f"fc.weight_after: {self.ctx.model.state_dict()['fc.weight']}")
+
+    def train(self, target_data_split_name="train", hooks_set=None):
+        hooks_set = hooks_set or self.hooks_in_train
+
+        self.ctx.check_split(target_data_split_name)
+        self.local_ctx.check_split(target_data_split_name)
+
+        num_samples = self._run_routine(MODE.TRAIN, hooks_set,
+                                        target_data_split_name)
+
+        return num_samples, self.get_model_para(), self.ctx.eval_metrics, self.local_ctx.eval_metrics
+
+    @distilllifecycle(LIFECYCLE.ROUTINE)
+    def _run_routine(self, mode, hooks_set, dataset_name=None):
+        for hook in hooks_set["on_fit_start"]:
+            hook(self.ctx)
+
+        self._run_epoch(hooks_set)
+
+        for hook in hooks_set["on_fit_end"]:
+            hook(self.ctx)
+
+        return self.ctx.num_samples
+    
+    @distilllifecycle(LIFECYCLE.EPOCH)
+    def _run_epoch(self, hooks_set):
+        for epoch_i in range(
+                getattr(self.ctx, f"num_{self.ctx.cur_split}_epoch")):
+            self.ctx.cur_epoch_i = CtxVar(epoch_i, "epoch")
+            self.local_ctx.cur_epoch_i = CtxVar(epoch_i, "epoch")
+
+            for hook in hooks_set["on_epoch_start"]:
+                hook(self.ctx)
+
+            self._run_batch(hooks_set)
+
+            for hook in hooks_set["on_epoch_end"]:
+                hook(self.ctx)
+
+    @distilllifecycle(LIFECYCLE.BATCH)
+    def _run_batch(self, hooks_set):
+        for batch_i in range(
+                getattr(self.ctx, f"num_{self.ctx.cur_split}_batch")):
+            self.ctx.cur_batch_i = CtxVar(batch_i, LIFECYCLE.BATCH)
+            self.local_ctx.cur_batch_i = CtxVar(batch_i, LIFECYCLE.BATCH)
+
+            for hook in hooks_set["on_batch_start"]:
+                hook(self.ctx)
+
+            for hook in hooks_set["on_batch_forward"]:
+                hook(self.ctx)
+
+            for hook in hooks_set["on_batch_backward"]:
+                hook(self.ctx)
+
+            for hook in hooks_set["on_batch_end"]:
+                hook(self.ctx)
+
+            # Break in the final epoch
+            if self.ctx.cur_mode in [
+                    MODE.TRAIN, MODE.FINETUNE
+            ] and self.ctx.cur_epoch_i == self.ctx.num_train_epoch - 1:
+                if batch_i >= self.ctx.num_train_batch_last_epoch - 1:
+                    break
+
 
 
     def distill(self, target_data_split_name="train", hooks_set=None, eval_before=False):
