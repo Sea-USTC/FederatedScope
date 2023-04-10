@@ -139,7 +139,8 @@ def load_external_data(config=None):
             raw_args.update({'download': True})
         filtered_args = filter_dict(dataset_func.__init__, raw_args)
         func_args = get_func_args(dataset_func.__init__)
-
+        if name == "EMNIST":
+            func_args.add('train')
         # Perform split on different dataset
         if 'train' in func_args:
             # Split train to (train, val)
