@@ -271,15 +271,19 @@ class MyTorchTrainer(GeneralTorchTrainer):
         # across different routines
         for ctx in (local_ctx, global_ctx):
             ctx.model.to(ctx.device)
-            ctx.optimizer = get_optimizer(ctx.model,
-                                            **ctx.cfg.train.optimizer)
-            ctx.scheduler = get_scheduler(ctx.optimizer,
-                                            **ctx.cfg.train.scheduler)
             ctx.loss_batch_total = CtxVar(0., LIFECYCLE.ROUTINE)
             ctx.loss_regular_total = CtxVar(0., LIFECYCLE.ROUTINE)
             ctx.num_samples = CtxVar(0, LIFECYCLE.ROUTINE)
             ctx.ys_true = CtxVar([], LIFECYCLE.ROUTINE)
             ctx.ys_prob = CtxVar([], LIFECYCLE.ROUTINE)
+        local_ctx.optimizer = get_optimizer(local_ctx.model,
+                                            **local_ctx.cfg.distill.optimizer4train)
+        local_ctx.scheduler = get_scheduler(local_ctx.optimizer,
+                                            **local_ctx.cfg.train.scheduler)
+        ctx.optimizer = get_optimizer(ctx.model,
+                                            **ctx.cfg.train.optimizer)
+        ctx.scheduler = get_scheduler(ctx.optimizer,
+                                            **ctx.cfg.train.scheduler)
 
     def _hook_on_train_epoch_start(self, ctx):
         local_ctx = self.local_ctx
@@ -365,7 +369,9 @@ class MyTorchTrainer(GeneralTorchTrainer):
             ctx.ys_true = CtxVar(np.concatenate(ctx.ys_true), LIFECYCLE.ROUTINE)
             ctx.ys_prob = CtxVar(np.concatenate(ctx.ys_prob), LIFECYCLE.ROUTINE)
         results = global_ctx.monitor.eval(global_ctx)
+        results_local = local_ctx.monitor.eval(local_ctx)
         setattr(global_ctx, 'eval_metrics', results)
+        setattr(local_ctx,'eval_metrics', results_local)
 
     def _hook_on_distill_fit_start_init(self, ctx):
         local_ctx = self.local_ctx
@@ -572,13 +578,17 @@ class MyTorchTrainer(GeneralTorchTrainer):
             model_parameters (dict): PyTorch Module object's state_dict.
         """
         for key in model_parameters:
-            if key.startswith('fc'):
+            if key.lower().startswith('classifier'):
                 continue
             model_parameters[key] = param2tensor(model_parameters[key])
         # Due to lazy load, we merge two state dict
         merged_param = merge_param_dict(self.ctx.model.state_dict().copy(),
                                         self._param_filter(model_parameters))
+        # if self.ctx.model.state_dict().get('fc.weight'):
+        #     logger.info(f"fc.weight_before: {self.ctx.model.state_dict()['fc.weight']}")
         self.ctx.model.load_state_dict(merged_param, strict=strict)
+        # if self.ctx.model.state_dict().get('fc.weight'):
+        #     logger.info(f"fc.weight_after: {self.ctx.model.state_dict()['fc.weight']}")
 
     def train(self, target_data_split_name="train", hooks_set=None):
         hooks_set = hooks_set or self.hooks_in_train
@@ -589,7 +599,7 @@ class MyTorchTrainer(GeneralTorchTrainer):
         num_samples = self._run_routine(MODE.TRAIN, hooks_set,
                                         target_data_split_name)
 
-        return num_samples, self.get_model_para(), self.ctx.eval_metrics
+        return num_samples, self.get_model_para(), self.ctx.eval_metrics, self.local_ctx.eval_metrics
 
     @distilllifecycle(LIFECYCLE.ROUTINE)
     def _run_routine(self, mode, hooks_set, dataset_name=None):
@@ -623,6 +633,7 @@ class MyTorchTrainer(GeneralTorchTrainer):
         for batch_i in range(
                 getattr(self.ctx, f"num_{self.ctx.cur_split}_batch")):
             self.ctx.cur_batch_i = CtxVar(batch_i, LIFECYCLE.BATCH)
+            self.local_ctx.cur_batch_i = CtxVar(batch_i, LIFECYCLE.BATCH)
 
             for hook in hooks_set["on_batch_start"]:
                 hook(self.ctx)

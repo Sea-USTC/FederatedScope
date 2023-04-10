@@ -557,6 +557,9 @@ class CODServer(BaseServer):
                                      self.models[model_idx_i])
 
         skip_broadcast = self._cfg.federate.method in ["local", "global"]
+        # Avg start from round 0 in new version.
+        # Avg start from round `distill` in first version
+        '''
         if self._cfg.distill.use:
             if self.state - 1 <= self._cfg.distill.local_train_epoches and\
             msg_type == 'evaluate':           
@@ -564,13 +567,13 @@ class CODServer(BaseServer):
             if self.state <= self._cfg.distill.local_train_epoches and\
             msg_type == 'model_para': 
                 skip_broadcast = True
-                
+        '''        
         if self.model_num > 1:
             model_para = [{} if skip_broadcast else model.state_dict()
                           for model in self.models]
         else:
             model_para = {} if skip_broadcast else self.model.state_dict()
-
+        
         # We define the evaluation happens at the end of an epoch
         rnd = self.state - 1 if msg_type == 'evaluate' else self.state
 
@@ -1112,11 +1115,13 @@ class CODClient(BaseClient):
                 0, self.trainer.get_model_para(), {}
         else:
             if round < self._cfg.distill.local_train_epoches:
-                sample_size, model_para_all, results = self.trainer.train()
+                sample_size, model_para_all, results, results_local = self.trainer.train()
             else:                
                 self.trainer.train()
                 self.trainer.distill(eval_before=True)
-                sample_size, model_para_all, results = self.trainer.distill()
+                self.trainer.distill()
+                #### twice train to identify
+                sample_size, model_para_all, results, results_local = self.trainer.train()
             if self._cfg.federate.share_local_model and not \
                     self._cfg.federate.online_aggr:
                 model_para_all = copy.deepcopy(model_para_all)
@@ -1126,6 +1131,12 @@ class CODClient(BaseClient):
                 role='Client #{}'.format(self.ID),
                 return_raw=True)
             logger.info(train_log_res)
+            train_log_res_local = self._monitor.format_eval_res(
+                results_local,
+                rnd=self.state,
+                role='Client #{}'.format(self.ID),
+                return_raw=True)
+            logger.info(train_log_res_local)
 
         # Return the feedbacks to the server after local update
         
@@ -1254,24 +1265,23 @@ class CODClient(BaseClient):
                     timestamp=timestamp,
                     content=metrics))
 
-            if self.state > self._cfg.distill.local_train_epoches:
-                a = self.trainer.ctx
-                self.trainer.ctx = self.trainer.local_ctx
-                self.trainer.local_ctx = a
-                for split in self._cfg.eval.split:
-                    # TODO: The time cost of evaluation is not considered here                    
-                    eval_metrics = self.trainer.evaluate(
-                        target_data_split_name=split)
-                    metrics.update(**eval_metrics)
-                a = self.trainer.ctx
-                self.trainer.ctx = self.trainer.local_ctx
-                self.trainer.local_ctx = a
-                formatted_eval_res = self._monitor.format_eval_res(
-                metrics,
-                rnd=self.state,
-                role='Client #{}'.format(self.ID),
-                forms=['raw'],
-                return_raw=True)
+            a = self.trainer.ctx
+            self.trainer.ctx = self.trainer.local_ctx
+            self.trainer.local_ctx = a
+            for split in self._cfg.eval.split:
+                # TODO: The time cost of evaluation is not considered here                    
+                eval_metrics = self.trainer.evaluate(
+                    target_data_split_name=split)
+                metrics.update(**eval_metrics)
+            a = self.trainer.ctx
+            self.trainer.ctx = self.trainer.local_ctx
+            self.trainer.local_ctx = a
+            formatted_eval_res = self._monitor.format_eval_res(
+            metrics,
+            rnd=self.state,
+            role='Client #{}'.format(self.ID),
+            forms=['raw'],
+            return_raw=True)
 
 
 
