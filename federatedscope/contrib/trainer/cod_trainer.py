@@ -578,8 +578,6 @@ class MyTorchTrainer(GeneralTorchTrainer):
             model_parameters (dict): PyTorch Module object's state_dict.
         """
         for key in model_parameters:
-            if key.lower().startswith('classifier'):
-                continue
             model_parameters[key] = param2tensor(model_parameters[key])
         # Due to lazy load, we merge two state dict
         merged_param = merge_param_dict(self.ctx.model.state_dict().copy(),

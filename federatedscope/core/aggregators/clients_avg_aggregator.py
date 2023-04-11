@@ -68,8 +68,6 @@ class ClientsAvgAggregator(Aggregator):
 
         sample_size, avg_model = models[0]
         for key in avg_model:
-            if key.lower().startswith('classifier'):
-                continue
             for i in range(len(models)):
                 local_sample_size, local_model = models[i]
 
