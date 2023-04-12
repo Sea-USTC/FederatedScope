@@ -1117,7 +1117,6 @@ class CODClient(BaseClient):
             if round < self._cfg.distill.local_train_epoches:
                 sample_size, model_para_all, results, results_local = self.trainer.train()
             else:                
-                self.trainer.train()
                 self.trainer.distill(eval_before=True)
                 self.trainer.distill()
                 #### twice train to identify

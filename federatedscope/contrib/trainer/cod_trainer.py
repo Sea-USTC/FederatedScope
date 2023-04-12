@@ -318,7 +318,7 @@ class MyTorchTrainer(GeneralTorchTrainer):
         global_ctx = ctx
         for ctx in (local_ctx, global_ctx):
             x, label = [_.to(ctx.device) for _ in ctx.data_batch]
-            pred = ctx.model(x)
+            pred, _ = ctx.model(x)
             if len(label.size()) == 0:
                 label = label.unsqueeze(0)
 
@@ -432,7 +432,7 @@ class MyTorchTrainer(GeneralTorchTrainer):
         if ctx.cur_mode == 'test':
             for ctx in (local_ctx, global_ctx):           
                 x, label = [_.to(ctx.device) for _ in ctx.data_batch]
-                pred = ctx.model(x)
+                pred, _ = ctx.model(x)
                 if len(label.size()) == 0:
                     label = label.unsqueeze(0)
 
@@ -450,19 +450,19 @@ class MyTorchTrainer(GeneralTorchTrainer):
                 teacher = local_ctx
 
             x, label = [_.to(student.device) for _ in student.data_batch]
-            pred_s = student.model(x)
-            pred_t = teacher.model(x)
-            pred_t = torch.div(pred_t, teacher.cfg.distill.temperature)
+            pred_s, s_feature = student.model(x)
+            pred_t, t_feature = teacher.model(x)
+            t_feature = torch.div(t_feature, teacher.cfg.distill.temperature)
             softmaxlayer = torch.nn.Softmax(dim=0)
-            pred_t = softmaxlayer(pred_t)
-            distilled_pred_s = torch.div(pred_s, student.cfg.distill.temperature)
+            t_feature = softmaxlayer(t_feature)
+            distilled_feature_s = torch.div(s_feature, student.cfg.distill.temperature)
             if len(label.size()) == 0:
                 label = label.unsqueeze(0)
             
             student.y_true = CtxVar(label, LIFECYCLE.BATCH)
             student.y_prob = CtxVar(pred_s, LIFECYCLE.BATCH)
             student.loss_batch = CtxVar(student.criterion(pred_s, label)+\
-                student.cfg.distill.alpha*student.criterion(distilled_pred_s, pred_t), LIFECYCLE.BATCH)
+                student.cfg.distill.alpha*student.criterion(distilled_feature_s, t_feature), LIFECYCLE.BATCH)
             student.batch_size = CtxVar(len(label), LIFECYCLE.BATCH)
 
     def _hook_on_distill_batch_forward_regularizer(self, ctx):
@@ -560,6 +560,17 @@ class MyTorchTrainer(GeneralTorchTrainer):
             logger.info(global_ctx.acc_list)
             logger.info(learn_from_the_other)
             setattr(local_ctx, 'learn_from_the_other', learn_from_the_other)
+
+    def _hook_on_batch_forward(self, ctx):
+        x, label = [_.to(ctx.device) for _ in ctx.data_batch]
+        pred, _ = ctx.model(x)
+        if len(label.size()) == 0:
+            label = label.unsqueeze(0)
+
+        ctx.y_true = CtxVar(label, LIFECYCLE.BATCH)
+        ctx.y_prob = CtxVar(pred, LIFECYCLE.BATCH)
+        ctx.loss_batch = CtxVar(ctx.criterion(pred, label), LIFECYCLE.BATCH)
+        ctx.batch_size = CtxVar(len(label), LIFECYCLE.BATCH)
 
     def register_hook_in_distill(self,
                                  new_hook,
