@@ -4,9 +4,9 @@ from torch import nn
 
 
 class MyNet(nn.Module):
-    def __init__(self, num_classes=10):
+    def __init__(self, num_classes=10, use_pre=False):
         super(MyNet, self).__init__()
-        model = resnet18(weights='DEFAULT')
+        model = resnet18(weights='DEFAULT') if use_pre else resnet18()
         layers = list(model.children())[:8]
         self.features1 = nn.Sequential(*layers[:6])
         self.features2 = nn.Sequential(*layers[6:])
@@ -22,7 +22,7 @@ class MyNet(nn.Module):
 
 def ModelBuilder(model_config, local_data):
 
-    model = MyNet(model_config.out_channels)
+    model = MyNet(model_config.out_channels, model_config.use_pre)
     return model
 
 def call_resnet(model_config, local_data):
