@@ -22,6 +22,7 @@ from federatedscope.core.workers.base_client import BaseClient
 
 from federatedscope.core.auxiliaries.trainer_builder import get_trainer
 from federatedscope.contrib.trainer.cod_trainer import MyTorchTrainer
+from federatedscope.contrib.trainer.sakd_trainer import SAKDTorchTrainer
 from federatedscope.core.aggregators import NoCommunicationAggregator
 
 
@@ -976,7 +977,15 @@ class CODClient(BaseClient):
 
         # Build Trainer
         # trainer might need configurations other than those of trainer node
-        self.trainer = MyTorchTrainer(model=model,
+        if self._cfg.trainer.type == 'cod_trainer':
+            self.trainer = MyTorchTrainer(model=model,
+                                   local_model=self.local_model,
+                                   data=data,
+                                   device=device,
+                                   config=self._cfg,
+                                   monitor=self._monitor)
+        elif self._cfg.trainer.type == 'sakd_trainer':
+            self.trainer = SAKDTorchTrainer(model=model,
                                    local_model=self.local_model,
                                    data=data,
                                    device=device,
@@ -1321,7 +1330,7 @@ class CODClient(BaseClient):
 
 
 def call_my_worker(method):
-    if method == 'codfed':
+    if method == 'codfed' or method == 'sakdfed':
         worker_builder = {'client': CODClient, 'server': CODServer}
         return worker_builder
 
