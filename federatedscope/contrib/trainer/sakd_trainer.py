@@ -336,7 +336,8 @@ class SAKDTorchTrainer(GeneralTorchTrainer):
         pred, _ = ctx.model(x)
         ctx.y_true = CtxVar(label, LIFECYCLE.BATCH)
         ctx.y_prob = CtxVar(pred, LIFECYCLE.BATCH)
-        ctx.loss_batch = CtxVar(BalancedSoftmaxRisk(pred, label, self.sample_per_class), LIFECYCLE.BATCH)
+        #ctx.loss_batch = CtxVar(BalancedSoftmaxRisk(pred, label, self.sample_per_class), LIFECYCLE.BATCH)
+        ctx.loss_batch = CtxVar(ctx.criterion(pred, label), LIFECYCLE.BATCH)
         ctx.batch_size = CtxVar(len(label), LIFECYCLE.BATCH)
 
     def _hook_on_train_batch_forward_regularizer(self, ctx):
