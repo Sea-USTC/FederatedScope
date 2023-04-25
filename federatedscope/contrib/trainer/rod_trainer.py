@@ -39,9 +39,8 @@ class RodTorchTrainer(GeneralTorchTrainer):
         super().__init__(model, data, device, config, only_for_eval, monitor)
         category_init_dict = dict()
         self.num_classes = self.cfg.model.out_channels
-        cifar_dataset = self.ctx.train_data.dataset.dataset
         self.train_category_subsets = {target: Subset(self.ctx.train_data, [i for i, (x, y) in enumerate(self.ctx.train_data) if y == target]) 
-                                        for _, target in cifar_dataset.class_to_idx.items()}
+                                        for target in range(self.num_classes)}
         self.sample_per_class=torch.zeros(self.num_classes)
         for target, subset in self.train_category_subsets.items():
             self.sample_per_class[target]=len(subset)
