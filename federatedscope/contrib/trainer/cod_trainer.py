@@ -145,13 +145,12 @@ class MyTorchTrainer(GeneralTorchTrainer):
         
         category_init_dict = dict()
         self.num_classes = self.cfg.model.out_channels
-        cifar_dataset = self.ctx.train_data.dataset.dataset
         self.train_category_subsets = {target: Subset(self.ctx.train_data, [i for i, (x, y) in enumerate(self.ctx.train_data) if y == target]) 
-                                        for _, target in cifar_dataset.class_to_idx.items()}
+                                        for target in range(self.num_classes)}
         self.train_category_loaders = {target: (get_dataloader(subset, self.cfg, 'train') if len(subset)>0 else DataLoader(subset))
                     for target, subset in self.train_category_subsets.items()}
         self.test_category_subsets = {target: Subset(self.ctx.test_data, [i for i, (x, y) in enumerate(self.ctx.test_data) if y == target]) 
-                                        for _, target in cifar_dataset.class_to_idx.items()}
+                                        for target in range(self.num_classes)}
         self.test_category_loaders = {target: (get_dataloader(subset, self.cfg, 'test') if len(subset)>0 else DataLoader(subset))
                     for target, subset in self.test_category_subsets.items()}
         category_init_dict['num_classes'] = self.num_classes
