@@ -25,7 +25,7 @@ from federatedscope.contrib.trainer.cod_trainer import MyTorchTrainer
 from federatedscope.contrib.trainer.sakd_trainer import SAKDTorchTrainer
 from federatedscope.core.aggregators import NoCommunicationAggregator
 
-
+from federatedscope.contrib.data.generic_dataset import load_cifar10, load_cifar100, load_fedisic
 
 logger = logging.getLogger(__name__)
 
@@ -774,6 +774,48 @@ class CODServer(BaseServer):
                 logger.info(formatted_eval_res)
             self.check_and_save()
         else:
+            if self._cfg.federate.generic_fl_eval:
+                model = self._model
+                model.to(self.device)
+                model.eval()
+                if self._cfg.data.type =='CIFAR10@torchvision':
+                    test_set = load_cifar10(self._cfg)
+                elif self._cfg.data.type =='CIFAR100@torchvision':
+                    test_set = load_cifar100(self._cfg)
+                elif self._cfg.data.type == 'fedisic':
+                    test_set = load_fedisic()
+                else:
+                    raise ValueError("cfg.data.type should be in [cifar10, cifar100, fedisic] if generic_fl_eval==True")
+                import torch
+                from federatedscope.core.auxiliaries.ReIterator import ReIterator
+                use_d_net=False if self._cfg.trainer.type == 'cvtrainer' else True
+                batchsize = 256
+                test_loader = torch.utils.data.DataLoader(test_set, batch_size=batchsize, shuffle=True)
+                itr_round = len(test_set)//batchsize + int(len(test_set)%batchsize>0)
+                ys_true = []
+                ys_prob = []
+                for _ in range(itr_round) :
+                    data_batch = next(ReIterator(test_loader))
+                    x, label = [xy.to(self.device) for xy in data_batch]
+                    if not use_d_net:
+                        pred = model(x)
+                    else :
+                        pred, feature = model(x)
+                    if len(label.size()) == 0:
+                        label = label.unsqueeze(0)
+                    ys_true.append(label.detach().cpu().numpy())
+                    ys_prob.append(pred.detach().cpu().numpy())
+                ys_prob=np.concatenate(ys_prob)
+                ys_true=np.concatenate(ys_true)
+                ys_pred=np.argmax(ys_prob, axis=1)
+                is_labeled = ys_true[:]==ys_true[:]
+                correct = ys_true[is_labeled]==ys_pred[is_labeled]
+                acc_rate = float(np.sum(correct))/len(correct)
+                save_file_name = "generic_eval.log"
+                line = f"Round: {self.state}, Acc: {acc_rate}\n"
+                with open(os.path.join(self._cfg.outdir, save_file_name), 
+                          "a") as outfile:
+                    outfile.write(line)
             # Preform evaluation in clients
             self.broadcast_model_para(msg_type='evaluate',
                                       filter_unseen_clients=False)

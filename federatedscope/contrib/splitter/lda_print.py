@@ -136,7 +136,8 @@ class LDA_printSplitter(BaseSplitter):
         frequency = np.sqrt(frequency)
         R = frequency/frequency.max()/2
         circles = [plt.Circle((j,i), radius=r) for r, j, i in zip(R.flat, x.flat, y.flat)]
-        col = PatchCollection(circles, array=red.flatten(), cmap="RdYlGn")
+        #col = PatchCollection(circles, array=red.flatten(), cmap="RdYlGn")
+        col = PatchCollection(circles, facecolors='darkcyan')
         ax.add_collection(col)
 
         ax.set(xticks=np.arange(classes), yticks=np.arange(client_num),
@@ -146,6 +147,7 @@ class LDA_printSplitter(BaseSplitter):
         ax.set_xlabel("class #")
         ax.set_ylabel("client #")
         ax.grid(which='minor')
+        ax.set_facecolor('azure')
         fig.set_size_inches(0.7*classes, 0.7*client_num)
         #fig.colorbar(col)
         fig.savefig(self.dir, dpi=300 )
